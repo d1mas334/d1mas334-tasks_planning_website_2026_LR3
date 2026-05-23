@@ -55,7 +55,7 @@ FROM users
 WHERE login = 'alexey';
 ```
 
-До оптимизации, без уникального индекса `users_login_key`:
+Для сравнения план до оптимизации был снят на временной версии таблицы без UNIQUE(login):
 
 ```text
 Seq Scan on users  (cost=0.00..10.50 rows=1 width=1736) (actual time=0.009..0.011 rows=1 loops=1)
