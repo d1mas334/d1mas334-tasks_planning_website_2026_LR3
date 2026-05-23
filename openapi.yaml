@@ -1,0 +1,423 @@
+openapi: 3.0.3
+info:
+  title: Task Planning API
+  description: REST API for laboratory work 02, variant 10, task planning.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /ping:
+    get:
+      summary: Service health check
+      security: []
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /api/users:
+    post:
+      summary: Create a new user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /api/auth/login:
+    post:
+      summary: Login and get a simple bearer token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Token created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/users/by-login:
+    get:
+      summary: Find user by login
+      parameters:
+        - name: login
+          in: query
+          required: true
+          schema:
+            type: string
+          example: ivan
+      responses:
+        '200':
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/users/search:
+    get:
+      summary: Search users by first or last name mask
+      parameters:
+        - name: mask
+          in: query
+          required: true
+          schema:
+            type: string
+          example: iv
+      responses:
+        '200':
+          description: Matching users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/goals:
+    post:
+      summary: Create a goal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGoalRequest'
+      responses:
+        '201':
+          description: Goal created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Goal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      summary: List all goals
+      responses:
+        '200':
+          description: Goals list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Goal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/goals/{goalId}/tasks:
+    parameters:
+      - name: goalId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+        example: 1
+    post:
+      summary: Create a task for a goal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      summary: List tasks for a goal
+      responses:
+        '200':
+          description: Goal tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/goals/{goalId}/tasks/{taskId}/status:
+    patch:
+      summary: Change task status
+      parameters:
+        - name: goalId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          example: 1
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskStatusRequest'
+      responses:
+        '200':
+          description: Task status changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token-{userId}
+  responses:
+    BadRequest:
+      description: Invalid JSON, empty required field, or invalid task status
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Requested user, goal, or task was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Login already exists
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: user not found
+    CreateUserRequest:
+      type: object
+      required: [login, password, firstName, lastName, email, phone, role]
+      properties:
+        login:
+          type: string
+          example: ivan
+        password:
+          type: string
+          example: '12345'
+        firstName:
+          type: string
+          example: Ivan
+        lastName:
+          type: string
+          example: Ivanov
+        email:
+          type: string
+          format: email
+          example: ivan@example.com
+        phone:
+          type: string
+          example: '+79990000000'
+        role:
+          type: string
+          example: manager
+    User:
+      type: object
+      required: [id, login, firstName, lastName, email, phone, role]
+      properties:
+        id:
+          type: integer
+          example: 1
+        login:
+          type: string
+          example: ivan
+        firstName:
+          type: string
+          example: Ivan
+        lastName:
+          type: string
+          example: Ivanov
+        email:
+          type: string
+          example: ivan@example.com
+        phone:
+          type: string
+          example: '+79990000000'
+        role:
+          type: string
+          example: manager
+    LoginRequest:
+      type: object
+      required: [login, password]
+      properties:
+        login:
+          type: string
+          example: ivan
+        password:
+          type: string
+          example: '12345'
+    LoginResponse:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          example: token-1
+    CreateGoalRequest:
+      type: object
+      required: [title, description]
+      properties:
+        title:
+          type: string
+          example: Сдать лабораторные
+        description:
+          type: string
+          example: Закрыть все лабораторные по архитектуре ИС
+    Goal:
+      type: object
+      required: [id, title, description, authorId, status]
+      properties:
+        id:
+          type: integer
+          example: 1
+        title:
+          type: string
+          example: Сдать лабораторные
+        description:
+          type: string
+          example: Закрыть все лабораторные по архитектуре ИС
+        authorId:
+          type: integer
+          example: 1
+        status:
+          type: string
+          example: active
+    CreateTaskRequest:
+      type: object
+      required: [title, description, assigneeId, dueDate]
+      properties:
+        title:
+          type: string
+          example: Сделать REST API
+        description:
+          type: string
+          example: Реализовать endpoints для варианта 10
+        assigneeId:
+          type: integer
+          example: 1
+        dueDate:
+          type: string
+          format: date
+          example: '2026-06-01'
+    Task:
+      type: object
+      required:
+        [id, goalId, title, description, assigneeId, authorId, status, dueDate]
+      properties:
+        id:
+          type: integer
+          example: 1
+        goalId:
+          type: integer
+          example: 1
+        title:
+          type: string
+          example: Сделать REST API
+        description:
+          type: string
+          example: Реализовать endpoints для варианта 10
+        assigneeId:
+          type: integer
+          example: 1
+        authorId:
+          type: integer
+          example: 1
+        status:
+          type: string
+          enum: [new, in_progress, done, cancelled]
+          example: new
+        dueDate:
+          type: string
+          format: date
+          example: '2026-06-01'
+    UpdateTaskStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [new, in_progress, done, cancelled]
+          example: in_progress

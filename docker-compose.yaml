@@ -1,0 +1,6 @@
+services:
+  task-planning-api:
+    build: .
+    container_name: task-planning-api
+    ports:
+      - "8080:8080"

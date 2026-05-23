@@ -1,0 +1,63 @@
+components_manager:
+  task_processors:
+    main-task-processor:
+      worker_threads: 4
+    fs-task-processor:
+      worker_threads: 1
+  default_task_processor: main-task-processor
+
+  components:
+    server:
+      listener:
+        port: 8080
+        task_processor: main-task-processor
+
+    logging:
+      fs-task-processor: fs-task-processor
+      loggers:
+        default:
+          file_path: '@stderr'
+          level: info
+          overflow_behavior: discard
+
+    in-memory-storage: {}
+
+    handler-ping:
+      path: /ping
+      method: GET
+      task_processor: main-task-processor
+
+    handler-users:
+      path: /api/users
+      method: POST
+      task_processor: main-task-processor
+
+    handler-login:
+      path: /api/auth/login
+      method: POST
+      task_processor: main-task-processor
+
+    handler-user-by-login:
+      path: /api/users/by-login
+      method: GET
+      task_processor: main-task-processor
+
+    handler-user-search:
+      path: /api/users/search
+      method: GET
+      task_processor: main-task-processor
+
+    handler-goals:
+      path: /api/goals
+      method: GET,POST
+      task_processor: main-task-processor
+
+    handler-goal-tasks:
+      path: /api/goals/{goalId}/tasks
+      method: GET,POST
+      task_processor: main-task-processor
+
+    handler-task-status:
+      path: /api/goals/{goalId}/tasks/{taskId}/status
+      method: PATCH
+      task_processor: main-task-processor
