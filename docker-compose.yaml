@@ -1,6 +1,23 @@
 services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: task_planning
+      POSTGRES_USER: task_planning
+      POSTGRES_PASSWORD: task_planning
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./db/data.sql:/docker-entrypoint-initdb.d/02-data.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U task_planning -d task_planning"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   task-planning-api:
     build: .
-    container_name: task-planning-api
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"

@@ -1,11 +1,12 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
-#include <mutex>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <userver/components/component_base.hpp>
@@ -17,6 +18,10 @@
 #include <userver/server/handlers/http_handler_base.hpp>
 #include <userver/server/http/http_request.hpp>
 #include <userver/server/http/http_status.hpp>
+#include <userver/storages/postgres/cluster.hpp>
+#include <userver/storages/postgres/component.hpp>
+#include <userver/storages/postgres/result_set.hpp>
+#include <userver/testsuite/testsuite_support.hpp>
 #include <userver/utils/daemon_run.hpp>
 
 namespace task_planning {
@@ -26,12 +31,13 @@ namespace formats = userver::formats;
 namespace handlers = userver::server::handlers;
 namespace http = userver::server::http;
 namespace json = userver::formats::json;
+namespace postgres = userver::storages::postgres;
 namespace server = userver::server;
 
 struct User {
-  int id{};
+  std::int64_t id{};
   std::string login;
-  std::string password;
+  std::string password_hash;
   std::string first_name;
   std::string last_name;
   std::string email;
@@ -40,108 +46,139 @@ struct User {
 };
 
 struct Goal {
-  int id{};
+  std::int64_t id{};
   std::string title;
   std::string description;
-  int author_id{};
+  std::int64_t author_id{};
   std::string status;
 };
 
 struct Task {
-  int id{};
-  int goal_id{};
+  std::int64_t id{};
+  std::int64_t goal_id{};
   std::string title;
   std::string description;
-  int assignee_id{};
-  int author_id{};
+  std::int64_t assignee_id{};
+  std::int64_t author_id{};
   std::string status;
   std::string due_date;
 };
 
-class InMemoryStorage final : public components::ComponentBase {
+class PostgresStorage final : public components::ComponentBase {
  public:
-  static constexpr std::string_view kName = "in-memory-storage";
+  static constexpr std::string_view kName = "postgres-storage";
 
-  using ComponentBase::ComponentBase;
+  PostgresStorage(const components::ComponentConfig& config,
+                  const components::ComponentContext& context)
+      : ComponentBase(config, context),
+        pg_cluster_(
+            context.FindComponent<components::Postgres>("task-planning-db")
+                .GetCluster()) {}
 
-  std::optional<User> CreateUser(User user) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  std::optional<User> CreateUser(const User& user) const {
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          INSERT INTO users (
+              login, password_hash, first_name, last_name, email, phone, role
+          )
+          VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)
+          ON CONFLICT DO NOTHING
+          RETURNING id, login, password_hash, first_name, last_name, email,
+                    COALESCE(phone, '') AS phone, role
+        )",
+        user.login, user.password_hash, user.first_name, user.last_name,
+        user.email, user.phone, user.role);
 
-    if (user_ids_by_login_.find(user.login) != user_ids_by_login_.end()) {
+    if (result.IsEmpty()) {
       return std::nullopt;
     }
 
-    user.id = next_user_id_++;
-    const auto id = user.id;
-    user_ids_by_login_[user.login] = id;
-    users_by_id_[id] = user;
-    user_order_.push_back(id);
-    return user;
+    return RowToUser(result[0]);
   }
 
   std::optional<User> FindUserByLogin(const std::string& login) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          SELECT id, login, password_hash, first_name, last_name, email,
+                 COALESCE(phone, '') AS phone, role
+          FROM users
+          WHERE login = $1
+        )",
+        login);
 
-    const auto login_it = user_ids_by_login_.find(login);
-    if (login_it == user_ids_by_login_.end()) {
+    if (result.IsEmpty()) {
       return std::nullopt;
     }
 
-    return users_by_id_.at(login_it->second);
+    return RowToUser(result[0]);
   }
 
-  std::optional<User> FindUserById(int id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+  std::optional<User> FindUserById(std::int64_t id) const {
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          SELECT id, login, password_hash, first_name, last_name, email,
+                 COALESCE(phone, '') AS phone, role
+          FROM users
+          WHERE id = $1
+        )",
+        id);
 
-    const auto it = users_by_id_.find(id);
-    if (it == users_by_id_.end()) {
+    if (result.IsEmpty()) {
       return std::nullopt;
     }
 
-    return it->second;
+    return RowToUser(result[0]);
   }
 
   std::vector<User> SearchUsers(const std::string& mask) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          SELECT id, login, password_hash, first_name, last_name, email,
+                 COALESCE(phone, '') AS phone, role
+          FROM users
+          WHERE LOWER(first_name) LIKE '%' || LOWER($1::text) || '%'
+             OR LOWER(last_name) LIKE '%' || LOWER($1::text) || '%'
+          ORDER BY id
+        )",
+        mask);
 
-    const auto lower_mask = ToLower(mask);
-    std::vector<User> result;
-    for (const auto user_id : user_order_) {
-      const auto& user = users_by_id_.at(user_id);
-      const auto first_name = ToLower(user.first_name);
-      const auto last_name = ToLower(user.last_name);
-      if (first_name.find(lower_mask) != std::string::npos ||
-          last_name.find(lower_mask) != std::string::npos) {
-        result.push_back(user);
-      }
+    std::vector<User> users;
+    users.reserve(result.Size());
+    for (const auto& row : result) {
+      users.push_back(RowToUser(row));
     }
-    return result;
+    return users;
   }
 
-  std::optional<int> AuthenticateUser(const std::string& login,
-                                      const std::string& password) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+  std::optional<std::int64_t> AuthenticateUser(
+      const std::string& login, const std::string& password) const {
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          SELECT id
+          FROM users
+          WHERE login = $1 AND password_hash = $2
+        )",
+        login, password);
 
-    const auto login_it = user_ids_by_login_.find(login);
-    if (login_it == user_ids_by_login_.end()) {
+    if (result.IsEmpty()) {
       return std::nullopt;
     }
 
-    const auto& user = users_by_id_.at(login_it->second);
-    if (user.password != password) {
-      return std::nullopt;
-    }
-
-    return user.id;
+    return result.AsSingleRow<std::int64_t>();
   }
 
-  std::optional<int> AuthenticateToken(std::string_view token) const {
+  std::optional<std::int64_t> AuthenticateToken(std::string_view token) const {
     constexpr std::string_view kPrefix = "token-";
     if (token.substr(0, kPrefix.size()) != kPrefix) {
       return std::nullopt;
     }
 
-    int user_id = 0;
+    std::int64_t user_id = 0;
     const auto id_view = token.substr(kPrefix.size());
     const auto* begin = id_view.data();
     const auto* end = id_view.data() + id_view.size();
@@ -150,126 +187,157 @@ class InMemoryStorage final : public components::ComponentBase {
       return std::nullopt;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (users_by_id_.find(user_id) == users_by_id_.end()) {
+    if (!FindUserById(user_id).has_value()) {
       return std::nullopt;
     }
 
     return user_id;
   }
 
-  Goal CreateGoal(std::string title, std::string description, int author_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  Goal CreateGoal(std::string title, std::string description,
+                  std::int64_t author_id) const {
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          INSERT INTO goals (title, description, author_id)
+          VALUES ($1, $2, $3)
+          RETURNING id, title, description, author_id, status
+        )",
+        title, description, author_id);
 
-    Goal goal;
-    goal.id = next_goal_id_++;
-    goal.title = std::move(title);
-    goal.description = std::move(description);
-    goal.author_id = author_id;
-    goal.status = "active";
-
-    goals_by_id_[goal.id] = goal;
-    goal_order_.push_back(goal.id);
-    return goal;
+    return RowToGoal(result[0]);
   }
 
   std::vector<Goal> ListGoals() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          SELECT id, title, description, author_id, status
+          FROM goals
+          ORDER BY id
+        )");
 
-    std::vector<Goal> result;
-    for (const auto goal_id : goal_order_) {
-      result.push_back(goals_by_id_.at(goal_id));
+    std::vector<Goal> goals;
+    goals.reserve(result.Size());
+    for (const auto& row : result) {
+      goals.push_back(RowToGoal(row));
     }
-    return result;
+    return goals;
   }
 
-  std::optional<Goal> FindGoalById(int id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+  std::optional<Goal> FindGoalById(std::int64_t id) const {
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          SELECT id, title, description, author_id, status
+          FROM goals
+          WHERE id = $1
+        )",
+        id);
 
-    const auto it = goals_by_id_.find(id);
-    if (it == goals_by_id_.end()) {
+    if (result.IsEmpty()) {
       return std::nullopt;
     }
 
-    return it->second;
+    return RowToGoal(result[0]);
   }
 
-  std::optional<Task> CreateTask(int goal_id, std::string title,
-                                 std::string description, int assignee_id,
-                                 int author_id, std::string due_date) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  std::optional<Task> CreateTask(std::int64_t goal_id, std::string title,
+                                 std::string description,
+                                 std::int64_t assignee_id,
+                                 std::int64_t author_id,
+                                 std::string due_date) const {
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          INSERT INTO tasks (
+              goal_id, title, description, assignee_id, author_id, due_date
+          )
+          VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')::date)
+          RETURNING id, goal_id, title, description, assignee_id, author_id,
+                    status, COALESCE(due_date::text, '') AS due_date
+        )",
+        goal_id, title, description, assignee_id, author_id, due_date);
 
-    if (goals_by_id_.find(goal_id) == goals_by_id_.end() ||
-        users_by_id_.find(assignee_id) == users_by_id_.end()) {
+    if (result.IsEmpty()) {
       return std::nullopt;
     }
 
-    Task task;
-    task.id = next_task_id_++;
-    task.goal_id = goal_id;
-    task.title = std::move(title);
-    task.description = std::move(description);
-    task.assignee_id = assignee_id;
-    task.author_id = author_id;
-    task.status = "new";
-    task.due_date = std::move(due_date);
-
-    tasks_by_id_[task.id] = task;
-    task_ids_by_goal_[goal_id].push_back(task.id);
-    return task;
+    return RowToTask(result[0]);
   }
 
-  std::vector<Task> ListTasks(int goal_id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<Task> ListTasks(std::int64_t goal_id) const {
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          SELECT id, goal_id, title, description, assignee_id, author_id,
+                 status, COALESCE(due_date::text, '') AS due_date
+          FROM tasks
+          WHERE goal_id = $1
+          ORDER BY id
+        )",
+        goal_id);
 
-    std::vector<Task> result;
-    const auto goal_it = task_ids_by_goal_.find(goal_id);
-    if (goal_it == task_ids_by_goal_.end()) {
-      return result;
+    std::vector<Task> tasks;
+    tasks.reserve(result.Size());
+    for (const auto& row : result) {
+      tasks.push_back(RowToTask(row));
     }
-
-    for (const auto task_id : goal_it->second) {
-      result.push_back(tasks_by_id_.at(task_id));
-    }
-    return result;
+    return tasks;
   }
 
-  std::optional<Task> UpdateTaskStatus(int goal_id, int task_id,
-                                       std::string status) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  std::optional<Task> UpdateTaskStatus(std::int64_t goal_id,
+                                       std::int64_t task_id,
+                                       std::string status) const {
+    const auto result = pg_cluster_->Execute(
+        postgres::ClusterHostType::kMaster,
+        R"(
+          UPDATE tasks
+          SET status = $3,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE goal_id = $1 AND id = $2
+          RETURNING id, goal_id, title, description, assignee_id, author_id,
+                    status, COALESCE(due_date::text, '') AS due_date
+        )",
+        goal_id, task_id, status);
 
-    const auto task_it = tasks_by_id_.find(task_id);
-    if (task_it == tasks_by_id_.end() || task_it->second.goal_id != goal_id) {
+    if (result.IsEmpty()) {
       return std::nullopt;
     }
 
-    task_it->second.status = std::move(status);
-    return task_it->second;
+    return RowToTask(result[0]);
   }
 
  private:
-  static std::string ToLower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](char ch) {
-      return static_cast<char>(
-          std::tolower(static_cast<unsigned char>(ch)));
-    });
-    return value;
+  static User RowToUser(const postgres::Row& row) {
+    const auto [id, login, password_hash, first_name, last_name, email, phone,
+                role] =
+        row.As<std::int64_t, std::string, std::string, std::string,
+               std::string, std::string, std::string, std::string>();
+
+    return User{id, login, password_hash, first_name, last_name, email, phone,
+                role};
   }
 
-  mutable std::mutex mutex_;
-  int next_user_id_{1};
-  int next_goal_id_{1};
-  int next_task_id_{1};
+  static Goal RowToGoal(const postgres::Row& row) {
+    const auto [id, title, description, author_id, status] =
+        row.As<std::int64_t, std::string, std::string, std::int64_t,
+               std::string>();
 
-  std::unordered_map<int, User> users_by_id_;
-  std::unordered_map<std::string, int> user_ids_by_login_;
-  std::vector<int> user_order_;
+    return Goal{id, title, description, author_id, status};
+  }
 
-  std::unordered_map<int, Goal> goals_by_id_;
-  std::vector<int> goal_order_;
+  static Task RowToTask(const postgres::Row& row) {
+    const auto [id, goal_id, title, description, assignee_id, author_id, status,
+                due_date] =
+        row.As<std::int64_t, std::int64_t, std::string, std::string,
+               std::int64_t, std::int64_t, std::string, std::string>();
 
-  std::unordered_map<int, Task> tasks_by_id_;
-  std::unordered_map<int, std::vector<int>> task_ids_by_goal_;
+    return Task{id,      goal_id,     title,  description,
+                assignee_id, author_id, status, due_date};
+  }
+
+  postgres::ClusterPtr pg_cluster_;
 };
 
 struct ApiError {
@@ -363,7 +431,21 @@ std::string GetRequiredString(const json::Value& body,
   return result;
 }
 
-int GetRequiredPositiveInt(const json::Value& body, std::string_view field_name) {
+std::string GetOptionalString(const json::Value& body,
+                              std::string_view field_name) {
+  const auto value = body[std::string{field_name}];
+  if (value.IsMissing()) {
+    return {};
+  }
+  if (!value.IsString()) {
+    throw ApiError{http::HttpStatus::kBadRequest,
+                   std::string{field_name} + " must be a string"};
+  }
+  return value.As<std::string>();
+}
+
+std::int64_t GetRequiredPositiveId(const json::Value& body,
+                                   std::string_view field_name) {
   const auto value = body[std::string{field_name}];
   if (value.IsMissing()) {
     throw ApiError{http::HttpStatus::kBadRequest,
@@ -371,7 +453,7 @@ int GetRequiredPositiveInt(const json::Value& body, std::string_view field_name)
   }
 
   try {
-    const auto result = value.As<int>();
+    const auto result = value.As<std::int64_t>();
     if (result <= 0) {
       throw ApiError{http::HttpStatus::kBadRequest,
                      std::string{field_name} + " must be positive"};
@@ -383,8 +465,9 @@ int GetRequiredPositiveInt(const json::Value& body, std::string_view field_name)
   }
 }
 
-int ParsePositiveId(std::string_view value, std::string_view field_name) {
-  int result = 0;
+std::int64_t ParsePositiveId(std::string_view value,
+                             std::string_view field_name) {
+  std::int64_t result = 0;
   const auto* begin = value.data();
   const auto* end = value.data() + value.size();
   const auto [ptr, ec] = std::from_chars(begin, end, result);
@@ -395,9 +478,30 @@ int ParsePositiveId(std::string_view value, std::string_view field_name) {
   return result;
 }
 
+bool IsValidUserRole(std::string_view role) {
+  return role == "worker" || role == "manager" || role == "admin";
+}
+
 bool IsValidTaskStatus(std::string_view status) {
   return status == "new" || status == "in_progress" || status == "done" ||
          status == "cancelled";
+}
+
+bool IsValidIsoDate(std::string_view value) {
+  if (value.size() != 10 || value[4] != '-' || value[7] != '-') {
+    return false;
+  }
+
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    if (i == 4 || i == 7) {
+      continue;
+    }
+    if (!std::isdigit(static_cast<unsigned char>(value[i]))) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 class ApiHandlerBase : public handlers::HttpHandlerBase {
@@ -405,7 +509,7 @@ class ApiHandlerBase : public handlers::HttpHandlerBase {
   ApiHandlerBase(const components::ComponentConfig& config,
                  const components::ComponentContext& context)
       : HttpHandlerBase(config, context),
-        storage_(context.FindComponent<InMemoryStorage>()) {}
+        storage_(context.FindComponent<PostgresStorage>()) {}
 
   std::string HandleRequestThrow(
       const http::HttpRequest& request,
@@ -422,7 +526,7 @@ class ApiHandlerBase : public handlers::HttpHandlerBase {
       const http::HttpRequest& request,
       server::request::RequestContext& context) const = 0;
 
-  int RequireAuth(const http::HttpRequest& request) const {
+  std::int64_t RequireAuth(const http::HttpRequest& request) const {
     constexpr std::string_view kPrefix = "Bearer ";
 
     const auto& auth_header = request.GetHeader("Authorization");
@@ -432,8 +536,8 @@ class ApiHandlerBase : public handlers::HttpHandlerBase {
                      "missing or invalid Authorization header"};
     }
 
-    const auto user_id = storage_.AuthenticateToken(
-        auth_view.substr(kPrefix.size()));
+    const auto user_id =
+        storage_.AuthenticateToken(auth_view.substr(kPrefix.size()));
     if (!user_id.has_value()) {
       throw ApiError{http::HttpStatus::kUnauthorized, "invalid bearer token"};
     }
@@ -441,7 +545,7 @@ class ApiHandlerBase : public handlers::HttpHandlerBase {
     return *user_id;
   }
 
-  InMemoryStorage& storage_;
+  PostgresStorage& storage_;
 };
 
 class PingHandler final : public ApiHandlerBase {
@@ -472,16 +576,21 @@ class UsersHandler final : public ApiHandlerBase {
 
     User user;
     user.login = GetRequiredString(body, "login");
-    user.password = GetRequiredString(body, "password");
+    user.password_hash = GetRequiredString(body, "password");
     user.first_name = GetRequiredString(body, "firstName");
     user.last_name = GetRequiredString(body, "lastName");
     user.email = GetRequiredString(body, "email");
-    user.phone = GetRequiredString(body, "phone");
+    user.phone = GetOptionalString(body, "phone");
     user.role = GetRequiredString(body, "role");
 
-    const auto created = storage_.CreateUser(std::move(user));
+    if (!IsValidUserRole(user.role)) {
+      throw ApiError{http::HttpStatus::kBadRequest, "invalid user role"};
+    }
+
+    const auto created = storage_.CreateUser(user);
     if (!created.has_value()) {
-      throw ApiError{http::HttpStatus::kConflict, "login already exists"};
+      throw ApiError{http::HttpStatus::kConflict,
+                     "login or email already exists"};
     }
 
     return MakeJsonResponse(request, http::HttpStatus::kCreated,
@@ -624,8 +733,13 @@ class GoalTasksHandler final : public ApiHandlerBase {
     const auto body = ParseJsonObjectBody(request);
     const auto title = GetRequiredString(body, "title");
     const auto description = GetRequiredString(body, "description");
-    const auto assignee_id = GetRequiredPositiveInt(body, "assigneeId");
-    const auto due_date = GetRequiredString(body, "dueDate");
+    const auto assignee_id = GetRequiredPositiveId(body, "assigneeId");
+    const auto due_date = GetOptionalString(body, "dueDate");
+
+    if (!due_date.empty() && !IsValidIsoDate(due_date)) {
+      throw ApiError{http::HttpStatus::kBadRequest,
+                     "dueDate must have YYYY-MM-DD format"};
+    }
 
     if (!storage_.FindUserById(assignee_id).has_value()) {
       throw ApiError{http::HttpStatus::kNotFound, "assignee user not found"};
@@ -680,7 +794,9 @@ class TaskStatusHandler final : public ApiHandlerBase {
 int main(int argc, char* argv[]) {
   const auto component_list =
       userver::components::MinimalServerComponentList()
-          .Append<task_planning::InMemoryStorage>()
+          .Append<userver::components::TestsuiteSupport>()
+          .Append<userver::components::Postgres>("task-planning-db")
+          .Append<task_planning::PostgresStorage>()
           .Append<task_planning::PingHandler>()
           .Append<task_planning::UsersHandler>()
           .Append<task_planning::LoginHandler>()
