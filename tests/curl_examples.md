@@ -15,9 +15,11 @@ curl -i "$BASE_URL/ping"
 ## 2. Create user
 
 ```bash
+LOGIN="ivan_$(date +%s)"
+
 curl -i -X POST "$BASE_URL/api/users" \
   -H "Content-Type: application/json" \
-  -d '{"login":"ivan","password":"12345","firstName":"Ivan","lastName":"Ivanov","email":"ivan@example.com","phone":"+79990000000","role":"manager"}'
+  -d "{\"login\":\"$LOGIN\",\"password\":\"12345\",\"firstName\":\"Ivan\",\"lastName\":\"Ivanov\",\"email\":\"$LOGIN@example.com\",\"phone\":\"+79990000000\",\"role\":\"manager\"}"
 ```
 
 ## 3. Login
@@ -25,19 +27,21 @@ curl -i -X POST "$BASE_URL/api/users" \
 ```bash
 curl -i -X POST "$BASE_URL/api/auth/login" \
   -H "Content-Type: application/json" \
-  -d '{"login":"ivan","password":"12345"}'
+  -d "{\"login\":\"$LOGIN\",\"password\":\"12345\"}"
 ```
 
-Дальше используется токен:
+Для дальнейших примеров можно использовать seed-пользователя из `db/data.sql`:
 
 ```bash
-TOKEN=token-1
+TOKEN=$(curl -s -X POST "$BASE_URL/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"login":"alexey","password":"pass123"}' | sed -E 's/.*"token":"([^"]+)".*/\1/')
 ```
 
 ## 4. Find user by login
 
 ```bash
-curl -i "$BASE_URL/api/users/by-login?login=ivan" \
+curl -i "$BASE_URL/api/users/by-login?login=alexey" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -54,7 +58,7 @@ curl -i "$BASE_URL/api/users/search?mask=iv" \
 curl -i -X POST "$BASE_URL/api/goals" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"title":"Сдать лабораторные","description":"Закрыть все лабораторные по архитектуре ИС"}'
+  -d '{"title":"Сдать лабораторную №3","description":"Подключить PostgreSQL storage"}'
 ```
 
 ## 7. List goals
@@ -70,7 +74,7 @@ curl -i "$BASE_URL/api/goals" \
 curl -i -X POST "$BASE_URL/api/goals/1/tasks" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"title":"Сделать REST API","description":"Реализовать endpoints для варианта 10","assigneeId":1,"dueDate":"2026-06-01"}'
+  -d '{"title":"Проверить PostgreSQL storage","description":"Убедиться, что API пишет в БД","assigneeId":1,"dueDate":"2026-06-01"}'
 ```
 
 ## 9. List goal tasks

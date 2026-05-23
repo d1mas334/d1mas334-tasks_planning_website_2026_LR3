@@ -11,6 +11,7 @@ FROM ghcr.io/userver-framework/ubuntu-22.04-userver:latest
 WORKDIR /app
 COPY --from=build /app/build/task_planning_api /app/task_planning_api
 COPY configs/static_config.yaml /app/configs/static_config.yaml
+COPY db /app/db
 
 EXPOSE 8080
 

@@ -20,7 +20,17 @@ components_manager:
           level: info
           overflow_behavior: discard
 
-    in-memory-storage: {}
+    task-planning-db:
+      dbconnection: 'postgresql://task_planning:task_planning@postgres:5432/task_planning'
+      blocking_task_processor: fs-task-processor
+      dns_resolver: getaddrinfo
+      min_pool_size: 1
+      max_pool_size: 5
+      max_queue_size: 200
+
+    postgres-storage: {}
+
+    testsuite-support: {}
 
     handler-ping:
       path: /ping
@@ -61,3 +71,14 @@ components_manager:
       path: /api/goals/{goalId}/tasks/{taskId}/status
       method: PATCH
       task_processor: main-task-processor
+
+    dynamic-config:
+      defaults:
+        POSTGRES_CONNECTION_POOL_SETTINGS:
+          task-planning-db:
+            min_pool_size: 1
+            max_pool_size: 5
+            max_queue_size: 200
+        POSTGRES_STATEMENT_METRICS_SETTINGS:
+          task-planning-db:
+            max_statement_metrics: 20
